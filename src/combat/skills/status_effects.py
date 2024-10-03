@@ -438,3 +438,46 @@ class PartyLeech(StatusEffect):
             display_status=True,
             override=True,
         )
+
+
+class WildFire(StatusEffect):
+
+    def __init__(self):
+        super().__init__(
+            effect_type=StatusEffectType.WILD_FIRE,
+            name="Wildfire",
+            description="",
+            trigger=[StatusEffectTrigger.ON_APPLICATION],
+            consumed=[StatusEffectTrigger.END_OF_APPLICANT_TURN],
+            display_status=True,
+            emoji="🔥",
+            delay_consume=True,
+        )
+
+
+class WildFireApplication(StatusEffect):
+
+    def __init__(self):
+        super().__init__(
+            effect_type=StatusEffectType.WILD_FIRE_APPLICATION,
+            name="WildfireApplication",
+            description="",
+            trigger=[StatusEffectTrigger.POST_ATTACK],
+            consumed=[StatusEffectTrigger.POST_ATTACK],
+            display_status=False,
+            emoji="",
+        )
+
+
+class WildFireDamage(StatusEffect):
+    def __init__(self):
+        super().__init__(
+            effect_type=StatusEffectType.WILD_FIRE_DAMAGE,
+            name="Wildfire",
+            description="",
+            trigger=[StatusEffectTrigger.END_OF_APPLICANT_TURN],
+            consumed=[StatusEffectTrigger.END_OF_APPLICANT_TURN],
+            damage_type=SkillEffect.PHYSICAL_DAMAGE,
+            display_status=False,
+            emoji="🔥",
+        )

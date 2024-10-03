@@ -29,16 +29,13 @@ class TurnEndState(State):
                 self.context, outcome.embed_data
             )
 
-        outcomes = (
-            await self.status_effect_manager.handle_applicant_turn_status_effects(
-                self.context, actor
-            )
+        outcome = await self.status_effect_manager.handle_end_of_applicant_turn_status_effects(
+            self.context, actor
         )
-        for outcome in outcomes.values():
-            if outcome.embed_data is not None:
-                await self.discord.update_current_turn_embed(
-                    self.context, outcome.embed_data
-                )
+        if outcome.embed_data is not None:
+            await self.discord.update_current_turn_embed(
+                self.context, outcome.embed_data
+            )
 
         if actor.is_enemy:
             combat_event_type = CombatEventType.ENEMY_END_TURN

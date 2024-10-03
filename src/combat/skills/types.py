@@ -25,6 +25,9 @@ class StatusEffectType(str, Enum):
     VULNERABLE = "Vulnerable"
     PHYS_VULN = "PhysVuln"
     MAGIC_VULN = "MagicVuln"
+    WILD_FIRE = "WildFire"
+    WILD_FIRE_APPLICATION = "WildFireApplication"
+    WILD_FIRE_DAMAGE = "WildFireDamage"
 
     PARTY_LEECH = "PartyLeech"
 
@@ -67,6 +70,7 @@ class SkillType(str, Enum):
     GENERATIONAL_SLIPPER = "GenerationalSlipper"
     SLICE_N_DICE = "SliceAndDice"
     COOL_CUCUMBER = "CoolCucumber"
+    BOMBE = "Bombe"
 
     # Neutral
     POCKET_SAND = "PocketSand"

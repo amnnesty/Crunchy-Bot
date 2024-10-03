@@ -129,6 +129,14 @@ class CombatStatusEffectManager(Service):
                     base_value = application_value * Config.BLEED_SCALING
 
                 damage = base_value
+            case StatusEffectType.WILD_FIRE_DAMAGE:
+
+                if application_value <= 0:
+                    return None
+                base_value = application_value * Config.WILDFIRE_SCALING
+
+                damage = base_value
+
             case StatusEffectType.PARTY_LEECH:
                 if source.is_enemy:
                     opponent: Opponent = source
@@ -338,6 +346,51 @@ class CombatStatusEffectManager(Service):
                         if message != "" and message not in info:
                             info.append(message)
                     info = "\n".join(info) if len(info) > 0 else None
+                case StatusEffectType.WILD_FIRE:
+                    source_actor = context.get_actor_by_id(
+                        active_status_effect.event.source_id
+                    )
+                    for combatant in context.active_combatants:
+
+                        await self.apply_status(
+                            context,
+                            source_actor,
+                            combatant,
+                            StatusEffectType.WILD_FIRE_APPLICATION,
+                            1,
+                        )
+                case StatusEffectType.WILD_FIRE_DAMAGE:
+
+                    combatant_count = context.combat_scale
+                    encounter_scaling = self.actor_manager.get_encounter_scaling(
+                        actor, combatant_count
+                    )
+                    damage = event.value
+                    total_damage = await self.actor_manager.get_damage_after_defense(
+                        actor, SkillEffect.STATUS_EFFECT_DAMAGE, damage
+                    )
+
+                    scaled_damage = max(1, int(total_damage * encounter_scaling))
+
+                    event = CombatEvent(
+                        datetime.datetime.now(),
+                        context.encounter.guild_id,
+                        context.encounter.id,
+                        event.source_id,
+                        event.actor_id,
+                        event.status_type,
+                        scaled_damage,
+                        total_damage,
+                        event.id,
+                        CombatEventType.STATUS_EFFECT_OUTCOME,
+                    )
+                    await self.controller.dispatch_event(event)
+
+                    if effect_type not in effect_data:
+                        value = total_damage
+                    else:
+                        value = effect_data[effect_type].value + total_damage
+
                 case StatusEffectType.BLEED:
                     if StatusEffectType.CLEANSE in [
                         x.status_effect.effect_type for x in status_effects
@@ -630,6 +683,8 @@ class CombatStatusEffectManager(Service):
                     description = (
                         f"{actor.name} suffers {outcome.value} bleeding damage."
                     )
+                case StatusEffectType.WILD_FIRE_DAMAGE:
+                    description = f"{actor.name} deals additional {outcome.value} explosion damage."
                 case StatusEffectType.HEAL_OVER_TIME:
                     description = f"{actor.name} heals for {outcome.value} hp."
                 case StatusEffectType.PARTY_LEECH:
@@ -868,11 +923,9 @@ class CombatStatusEffectManager(Service):
         skill: Skill,
         damage_instance: SkillInstance,
     ) -> tuple[StatusEffectOutcome, list[tuple[StatusEffectType, int]]]:
-        current_actor = context.get_actor_by_id(actor.id)
-        current_target = context.get_actor_by_id(target.id)
         outcomes: dict[StatusEffectType, StatusEffectOutcome] = {}
         triggered_status_effects = await self.actor_trigger(
-            context, current_actor, StatusEffectTrigger.POST_ATTACK
+            context, actor, StatusEffectTrigger.POST_ATTACK
         )
 
         applied_status_effects: list[tuple[StatusEffectType, int]] = []
@@ -895,8 +948,8 @@ class CombatStatusEffectManager(Service):
 
                     applied_status_type = await self.apply_status(
                         context,
-                        current_actor,
-                        current_target,
+                        actor,
+                        target,
                         StatusEffectType.BLEED,
                         3,
                         damage,
@@ -908,6 +961,22 @@ class CombatStatusEffectManager(Service):
                                 3,
                             )
                         )
+                case StatusEffectType.WILD_FIRE_APPLICATION:
+
+                    final_damage = await self.actor_manager.get_damage_after_defense(
+                        target, skill.base_skill.skill_effect, damage_instance.value
+                    )
+                    inital_source_actor = context.get_actor_by_id(
+                        triggered_status_effect.event.source_id
+                    )
+                    applied_status_type = await self.apply_status(
+                        context,
+                        inital_source_actor,
+                        target,
+                        StatusEffectType.WILD_FIRE_DAMAGE,
+                        1,
+                        final_damage,
+                    )
                 case StatusEffectType.POISON:
                     if StatusEffectType.CLEANSE in [
                         x.status_effect.effect_type for x in triggered_status_effects
@@ -934,8 +1003,8 @@ class CombatStatusEffectManager(Service):
                         datetime.datetime.now(),
                         context.encounter.guild_id,
                         context.encounter.id,
-                        current_actor.id,
-                        current_actor.id,
+                        actor.id,
+                        actor.id,
                         StatusEffectType.POISON,
                         poison_damage,
                         damage_display,
@@ -1019,12 +1088,12 @@ class CombatStatusEffectManager(Service):
 
         return self.combine_outcomes(outcomes.values(), embed_data)
 
-    async def handle_applicant_turn_status_effects(
+    async def handle_end_of_applicant_turn_status_effects(
         self,
         context: EncounterContext,
         actor: Actor,
-    ) -> dict[int, StatusEffectOutcome]:
-        actor_outcomes = {}
+    ) -> StatusEffectOutcome:
+        triggered_status_effects_collection = []
 
         for active_actor in context.current_initiative:
 
@@ -1043,24 +1112,21 @@ class CombatStatusEffectManager(Service):
 
             if len(filtered) <= 0:
                 continue
+            triggered_status_effects_collection.extend(filtered)
 
-            outcomes = await self.get_status_effect_outcomes(
-                StatusEffectTrigger.END_OF_APPLICANT_TURN,
-                context,
-                active_actor,
-                filtered,
-            )
-            embed_data = await self.get_status_effect_outcome_info(
-                StatusEffectTrigger.END_OF_APPLICANT_TURN,
-                context,
-                active_actor,
-                outcomes,
-            )
-            actor_outcomes[active_actor.id] = self.combine_outcomes(
-                outcomes.values(), embed_data
-            )
-
-        return actor_outcomes
+        outcomes = await self.get_status_effect_outcomes(
+            StatusEffectTrigger.END_OF_APPLICANT_TURN,
+            context,
+            actor,
+            triggered_status_effects_collection,
+        )
+        embed_data = await self.get_status_effect_outcome_info(
+            StatusEffectTrigger.END_OF_APPLICANT_TURN,
+            context,
+            actor,
+            outcomes,
+        )
+        return self.combine_outcomes(outcomes.values(), embed_data)
 
     async def actor_trigger(
         self,

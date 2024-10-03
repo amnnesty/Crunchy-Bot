@@ -972,6 +972,31 @@ class SpectralHand(BaseSkill):
         )
 
 
+class Bombe(BaseSkill):
+
+    def __init__(self):
+        super().__init__(
+            name="Bombe",
+            skill_type=SkillType.BOMBE,
+            description="",
+            information="",
+            skill_effect=SkillEffect.PHYSICAL_DAMAGE,
+            cooldown=2,
+            base_value=1,
+            hits=1,
+            stacks=2,
+            status_effects=[
+                SkillStatusEffect(
+                    StatusEffectType.WILD_FIRE,
+                    1
+                )
+            ],
+            image_url="",
+            min_level=6,
+            author="Serien",
+        )
+
+
 # Enemy Skills
 
 

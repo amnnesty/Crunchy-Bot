@@ -1,6 +1,7 @@
 import contextlib
 
 import discord
+
 from control.controller import Controller
 from control.types import ControllerType
 from events.types import UIEventType
@@ -21,6 +22,7 @@ class ShopView(ViewMenu):
     ):
         super().__init__(timeout=300)
         self.controller = controller
+        items = sorted(items, key=lambda x: (x.shop_category.value, x.cost))
         self.items = items
         self.guild_name = interaction.guild.name
         self.member_id = interaction.user.id
@@ -37,7 +39,7 @@ class ShopView(ViewMenu):
         self.user_items: dict[ItemType, int] = {}
         self.disabled = False
 
-        self.controller_type = ControllerType.SHOP_VIEW
+        self.controller_types = [ControllerType.SHOP_VIEW]
         self.controller.register_view(self)
         self.refresh_elements()
 
@@ -191,7 +193,7 @@ class BalanceButton(discord.ui.Button):
 
         if await view.interaction_check(interaction):
             await interaction.response.defer(ephemeral=True)
-            event = UIEvent(UIEventType.SHOW_INVENTORY, interaction)
+            event = UIEvent(UIEventType.SHOW_INVENTORY, interaction, view.id)
             await view.controller.dispatch_ui_event(event)
 
 

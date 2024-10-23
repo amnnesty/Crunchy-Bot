@@ -1,3 +1,4 @@
+import datetime
 from collections.abc import Callable
 
 from combat.encounter import EncounterContext
@@ -21,12 +22,15 @@ from control.combat.combat_embed_manager import CombatEmbedManager
 from control.combat.discord_manager import DiscordManager
 from control.controller import Controller
 from events.bot_event import BotEvent
+from events.encounter_event import EncounterEvent
+from events.types import EncounterEventType
 
 
 class Engine:
 
     def __init__(self, controller: Controller, context: EncounterContext):
         self.controller = controller
+        self.bot = self.controller.bot
         self.state_init: list[Callable] = {
             InitialState,
             WaitingState,
@@ -70,13 +74,13 @@ class Engine:
         self.current_state = next_state
         self.state = self.states[self.current_state]
         await self.state.startup()
-        if self.state.quit:
-            self.done = True
-        elif self.state.done:
+        if self.state.done:
             await self.update()
+        elif self.state.quit:
+            await self.end()
 
     async def update(self):
-        if self.context.concluded:
+        if self.done:
             return
 
         if self.context.initiated:
@@ -94,11 +98,22 @@ class Engine:
                 self.state.next_state = StateType.ENCOUNTER_END
 
         if self.state.quit:
-            self.done = True
+            await self.end()
         elif self.state.done:
             await self.state_transition()
         else:
             await self.state.update()
+
+    async def end(self):
+        self.done = True
+        event = EncounterEvent(
+            datetime.datetime.now(),
+            self.context.encounter.guild_id,
+            self.context.encounter.id,
+            self.bot.user.id,
+            EncounterEventType.CLEANUP,
+        )
+        await self.controller.dispatch_event(event)
 
     async def handle(self, event: BotEvent):
         if not self.done:

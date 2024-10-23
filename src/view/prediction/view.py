@@ -46,7 +46,7 @@ class PredictionView(ViewMenu):
 
         self.message = None
 
-        self.controller_type = ControllerType.PREDICTION_VIEW
+        self.controller_types = [ControllerType.PREDICTION_VIEW]
         self.controller.register_view(self)
         self.refresh_elements()
 
@@ -247,7 +247,7 @@ class BalanceButton(discord.ui.Button):
 
         if await view.interaction_check(interaction):
             await interaction.response.defer(ephemeral=True)
-            event = UIEvent(UIEventType.SHOW_INVENTORY, interaction)
+            event = UIEvent(UIEventType.SHOW_INVENTORY, interaction, view.id)
             await view.controller.dispatch_ui_event(event)
 
 

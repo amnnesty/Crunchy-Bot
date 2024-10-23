@@ -41,20 +41,24 @@ class EnemyEngageView(ViewMenu):
         self.controller = controller
 
         self.context = context
-        self.controller_type = ControllerType.COMBAT
+        self.controller_types = [ControllerType.COMBAT]
         self.controller.register_view(self)
         self.done = False
         self.active = False
         self.timeout_timestamp = None
+        self.restriction_timestamp = None
         self.loaded = False
         self.timer = None
+
+        now = datetime.datetime.now().timestamp()
+
         if self.context.min_participants > 1 and self.context.max_lvl:
             self.timer = Timer(
                 self.DEFAULT_RESTRICTION_TIMEOUT, self.remove_restriction
             )
+            self.restriction_timestamp = int(now + self.DEFAULT_RESTRICTION_TIMEOUT)
 
         if timeout is not None:
-            now = datetime.datetime.now().timestamp()
             self.timeout_timestamp = int(now + timeout)
 
         self.refresh_elements(disabled=(not self.loaded))
@@ -128,17 +132,35 @@ class EnemyEngageView(ViewMenu):
                 self.controller.detach_view(self)
             return
 
+        now = datetime.datetime.now().timestamp()
+
+        if self.timeout is not None:
+            self.timeout = self.timeout_timestamp - now
+
         if self.active and self.timeout is not None:
             self.timeout = None
 
         if self.done and self.timeout is None:
             self.timeout = self.DEFAULT_TIMEOUT / 5
-            now = datetime.datetime.now().timestamp()
             self.timeout_timestamp = int(now + self.timeout)
 
         if (not self.active or self.done) and self.timeout_timestamp is not None:
             embed.add_field(
-                name=f"Will disappear <t:{self.timeout_timestamp}:R>", value=""
+                name=f"Will disappear <t:{self.timeout_timestamp}:R>",
+                value="",
+                inline=False,
+            )
+
+        if (
+            not self.active
+            and not self.done
+            and self.context.min_participants > 1
+            and self.context.max_lvl
+        ):
+            embed.add_field(
+                name=f"Member restriction removed <t:{self.restriction_timestamp}:R>",
+                value="",
+                inline=False,
             )
 
         try:

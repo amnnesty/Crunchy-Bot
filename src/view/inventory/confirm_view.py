@@ -41,7 +41,7 @@ class InventoryConfirmView(ViewMenu):
 
         self.cancel_button: CancelButton = None
 
-        self.controller_type = ControllerType.INVENTORY_VIEW
+        self.controller_types = [ControllerType.INVENTORY_VIEW]
         self.controller.register_view(self)
 
         self.refresh_elements()
@@ -89,7 +89,9 @@ class InventoryConfirmView(ViewMenu):
 
         embed = force_embed
         if embed is None:
-            embed = self.item.get_embed(self.controller.bot, color=color)
+            embed = self.item.get_embed(
+                self.controller.bot, color=color, show_title=False, show_price=True
+            )
 
         emoji = self.item.emoji
         if isinstance(self.item.emoji, int):

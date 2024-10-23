@@ -10,7 +10,8 @@ from combat.enchantments.enchantment import (
     EffectEnchantment,
     Enchantment,
 )
-from combat.enchantments.types import EnchantmentEffect
+from combat.enchantments.enchantments import *  # noqa: F403
+from combat.enchantments.types import EnchantmentEffect, EnchantmentType
 from combat.encounter import EncounterContext
 from combat.enemies.enemy import Enemy
 from combat.gear.bases import *  # noqa: F403
@@ -37,12 +38,14 @@ from combat.gear.uniques import Unique
 from combat.skills.skill import BaseSkill, Skill
 from combat.skills.skills import *  # noqa: F403
 from combat.skills.types import SkillType
+from combat.types import UnlockableFeature
 from control.combat.combat_skill_manager import CombatSkillManager
 from control.combat.object_factory import ObjectFactory
 from control.controller import Controller
 from control.item_manager import ItemManager
 from control.logger import BotLogger
 from control.service import Service
+from control.settings_manager import SettingsManager
 from datalayer.database import Database
 from events.bot_event import BotEvent
 from events.encounter_event import EncounterEvent
@@ -59,8 +62,7 @@ class CombatGearManager(Service):
 
     ITEM_LEVEL_MIN_DROP = 0.6
     SKILL_DROP_CHANCE = 0.1
-    ENCHANTMENT_DROP_CHANCE = 0
-    # ENCHANTMENT_DROP_CHANCE = 0.05
+    ENCHANTMENT_DROP_CHANCE = 0.05
     GEAR_LEVEL_SCALING = 1
     MOB_LOOT_BONUS_SCALING = 1
     MOB_LOOT_UNIQUE_SCALING = 0.2
@@ -74,6 +76,7 @@ class CombatGearManager(Service):
         Rarity.UNIQUE: 2,
         Rarity.LEGENDARY: 4,
     }
+
     RARITY_WEIGHTS = {
         Rarity.COMMON: 100,
         Rarity.UNCOMMON: 50,
@@ -97,6 +100,7 @@ class CombatGearManager(Service):
         Rarity.UNIQUE: 0,
     }
 
+    ENCHANTMENT_SCALING = 2.5
     SLOT_SCALING = {
         EquipmentSlot.WEAPON: 3,
         EquipmentSlot.HEAD: 1,
@@ -161,6 +165,16 @@ class CombatGearManager(Service):
         GearModifierType.DEXTERITY,
     ]
 
+    UNIQE_BASE_UPSCALE = {
+        1: Stick_T0(),  # noqa: F405
+        2: Stick_T1(),  # noqa: F405
+        3: Stick_T2(),  # noqa: F405
+        4: Stick_T3(),  # noqa: F405
+        5: Stick_T4(),  # noqa: F405
+        6: Stick_T5(),  # noqa: F405
+        7: Stick_T5(),  # noqa: F405
+    }
+
     def __init__(
         self,
         bot: commands.Bot,
@@ -172,6 +186,9 @@ class CombatGearManager(Service):
         self.controller = controller
         self.log_name = "Combat Loot"
         self.item_manager: ItemManager = self.controller.get_service(ItemManager)
+        self.settings_manager: SettingsManager = self.controller.get_service(
+            SettingsManager
+        )
         self.skill_manager: CombatSkillManager = self.controller.get_service(
             CombatSkillManager
         )
@@ -182,6 +199,7 @@ class CombatGearManager(Service):
 
     async def get_bases_by_lvl(
         self,
+        guild_id: int,
         item_level: int,
         exclude_skills: bool = False,
         gear_slot: EquipmentSlot = None,
@@ -190,11 +208,31 @@ class CombatGearManager(Service):
 
         gear_base_types = [base_type for base_type in GearBaseType]
 
+        skill_base_types = []
+        enchantment_base_types = []
+
         if not exclude_skills:
             skill_base_types = [base_type for base_type in SkillType]
-            base_types = gear_base_types + skill_base_types
-        else:
-            base_types = gear_base_types
+
+        unlocked = await self.settings_manager.get_unlocked_features(guild_id)
+        crafting_unlocked = UnlockableFeature.CRAFTING in unlocked
+        enchantments_unlocked = UnlockableFeature.ENCHANTMENTS in unlocked
+        if enchantments_unlocked and crafting_unlocked:
+            enchantment_base_types = [base_type for base_type in EnchantmentType]
+        elif enchantments_unlocked:
+            enchantment_base_types = [
+                base_type
+                for base_type in EnchantmentType
+                if not EnchantmentType.is_crafting(base_type)
+            ]
+        elif crafting_unlocked:
+            enchantment_base_types = [
+                base_type
+                for base_type in EnchantmentType
+                if EnchantmentType.is_crafting(base_type)
+            ]
+
+        base_types = gear_base_types + skill_base_types + enchantment_base_types
 
         for base_type in base_types:
             base_class = globals()[base_type]
@@ -216,6 +254,7 @@ class CombatGearManager(Service):
 
     async def get_random_base(
         self,
+        guild_id: int,
         item_level: int,
         enemy: Enemy = None,
         exclude_skills: bool = False,
@@ -224,7 +263,10 @@ class CombatGearManager(Service):
     ) -> DroppableBase:
 
         bases = await self.get_bases_by_lvl(
-            item_level, exclude_skills=exclude_skills, gear_slot=gear_slot
+            guild_id=guild_id,
+            item_level=item_level,
+            exclude_skills=exclude_skills,
+            gear_slot=gear_slot,
         )
 
         if len(bases) <= 0:
@@ -340,8 +382,16 @@ class CombatGearManager(Service):
         modifiers = {}
         unique: Unique = base
         for modifier_type, scaling in unique.unique_modifiers.items():
+
+            effective_base = base
+            if base.slot == EquipmentSlot.WEAPON and modifier_type in [
+                GearModifierType.WEAPON_DAMAGE_MIN,
+                GearModifierType.WEAPON_DAMAGE_MAX,
+            ]:
+                effective_base = self.UNIQE_BASE_UPSCALE[item_level]
+
             min_roll, max_roll = await self.get_modifier_boundaries(
-                base, item_level, modifier_type
+                effective_base, item_level, modifier_type
             )
 
             min_roll *= 0.9
@@ -514,7 +564,8 @@ class CombatGearManager(Service):
     ) -> Gear:
 
         droppable_base = await self.get_random_base(
-            item_level,
+            guild_id=guild_id,
+            item_level=item_level,
             enemy=enemy,
             exclude_skills=exclude_skills,
             gear_slot=gear_slot,
@@ -589,8 +640,22 @@ class CombatGearManager(Service):
 
             case Base.ENCHANTMENT:
                 base_enchantment: BaseEnchantment = base
-                if base_enchantment.fixed_rarity is not None:
-                    rarity = base_enchantment.fixed_rarity
+                match base_enchantment.enchantment_type:
+                    case EnchantmentType.SKILL_STACKS:
+                        base_enchantment = SkillStacks(item_level)  # noqa: F405
+                if rarity not in base_enchantment.rarities:
+                    min_weight = self.RARITY_WEIGHTS[rarity]
+                    matched_rarity = None
+                    for comparison_rarity, weight in self.RARITY_WEIGHTS.items():
+                        if comparison_rarity not in base_enchantment.rarities:
+                            continue
+
+                        matched_rarity = comparison_rarity
+
+                        if weight <= min_weight:
+                            break
+
+                    rarity = matched_rarity
                 if base_enchantment.enchantment_effect == EnchantmentEffect.EFFECT:
                     enchantment = EffectEnchantment(
                         base_enchantment=base_enchantment,
@@ -780,9 +845,12 @@ class CombatGearManager(Service):
         }
         gear_score = gear.level * item_level_weight
         gear_score *= rarity_weight[gear.rarity]
-        gear_score *= self.SLOT_SCALING[gear.slot]
+        if gear.base.base_type == Base.ENCHANTMENT:
+            gear_score *= self.ENCHANTMENT_SCALING
+        else:
+            gear_score *= self.SLOT_SCALING[gear.slot]
 
-        return gear_score
+        return int(gear_score)
 
     async def test_generation(self):
         for _ in range(10):

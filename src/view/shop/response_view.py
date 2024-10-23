@@ -49,7 +49,7 @@ class ShopResponseView(ViewMenu):
         self.reaction_input_button: ReactionInputButton = None
         self.submission_button: SubmissionInputButton = None
 
-        self.controller_type = ControllerType.SHOP_RESPONSE_VIEW
+        self.controller_types = [ControllerType.SHOP_RESPONSE_VIEW]
         self.controller.register_view(self)
 
     async def init(self):
@@ -102,7 +102,11 @@ class ShopResponseView(ViewMenu):
         embed = force_embed
         if embed is None:
             embed = self.item.get_embed(
-                self.controller.bot, color=color, amount_in_cart=self.selected_amount
+                self.controller.bot,
+                show_price=True,
+                color=color,
+                count=self.selected_amount,
+                show_title=False,
             )
 
         emoji = self.item.emoji

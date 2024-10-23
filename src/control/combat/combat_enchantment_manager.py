@@ -4,12 +4,13 @@ import random
 from discord.ext import commands
 
 from combat.actors import Character
-from combat.effects.effect import EffectOutcome
+from combat.effects.effect import EffectOutcome, OutcomeFlag
 from combat.effects.effect_handler import HandlerContext
 from combat.effects.types import EffectTrigger
 from combat.enchantments.enchantment import (
     CraftDisplayWrapper,
     EffectEnchantment,
+    Enchantment,
     GearEnchantment,
 )
 from combat.enchantments.enchantment_handler import (
@@ -18,7 +19,6 @@ from combat.enchantments.enchantment_handler import (
 )
 from combat.enchantments.types import EnchantmentEffect, EnchantmentType
 from combat.encounter import EncounterContext
-from combat.gear.gear import Enchantment
 from combat.gear.types import CharacterAttribute, GearModifierType
 from combat.skills.skill import SkillInstance
 from combat.skills.skills import *  # noqa: F403
@@ -47,6 +47,8 @@ class CombatEnchantmentManager(Service):
         self.controller = controller
         self.ai_manager: AIManager = self.controller.get_service(AIManager)
         self.log_name = "Combat Enchantments"
+
+        self.handler_cache: dict[EnchantmentType, EnchantmentEffectHandler] = {}
 
     async def listen_for_event(self, event: BotEvent):
         pass
@@ -147,13 +149,13 @@ class CombatEnchantmentManager(Service):
                 modifier += character.equipment.attributes[
                     CharacterAttribute.PHYS_DAMAGE_INCREASE
                 ]
-                if base_dmg_type != enchantment.base_skill.skill_effect:
+                if base_dmg_type != enchantment.base_enchantment.skill_effect:
                     modifier *= Config.SKILL_TYPE_PENALTY
             case SkillEffect.MAGICAL_DAMAGE:
                 modifier += character.equipment.attributes[
                     CharacterAttribute.MAGIC_DAMAGE_INCREASE
                 ]
-                if base_dmg_type != enchantment.base_skill.skill_effect:
+                if base_dmg_type != enchantment.base_enchantment.skill_effect:
                     modifier *= Config.SKILL_TYPE_PENALTY
             case SkillEffect.HEALING:
                 encounter_scaling = 1
@@ -204,10 +206,19 @@ class CombatEnchantmentManager(Service):
         handler_context: HandlerContext,
     ) -> EffectOutcome:
 
-        triggered_enchantments = await self.enchantment_trigger(
+        triggered_source_enchantments = await self.enchantment_trigger(
+            handler_context.context,
+            handler_context.source,
+            EffectTrigger.ON_STATUS_APPLICATION,
+        )
+
+        triggered_target_enchantments = await self.enchantment_trigger(
             handler_context.context,
             handler_context.target,
             EffectTrigger.ON_STATUS_APPLICATION,
+        )
+        triggered_enchantments = (
+            triggered_source_enchantments + triggered_target_enchantments
         )
 
         if len(triggered_enchantments) <= 0:
@@ -316,6 +327,17 @@ class CombatEnchantmentManager(Service):
 
         return await self.get_outcome(triggered_enchantments, handler_context)
 
+    async def on_post_skill(
+        self,
+        handler_context: HandlerContext,
+    ) -> EffectOutcome:
+
+        triggered_enchantments = await self.enchantment_trigger(
+            handler_context.context, handler_context.source, EffectTrigger.POST_SKILL
+        )
+
+        return await self.get_outcome(triggered_enchantments, handler_context)
+
     async def on_round_start(
         self,
         handler_context: HandlerContext,
@@ -384,6 +406,32 @@ class CombatEnchantmentManager(Service):
     ) -> EffectOutcome:
         return EffectOutcome.EMPTY()
 
+    async def on_skill_charges(
+        self,
+        handler_context: HandlerContext,
+    ) -> EffectOutcome:
+        triggered_enchantments = await self.enchantment_trigger(
+            handler_context.context, handler_context.source, EffectTrigger.SKILL_CHARGE
+        )
+
+        if len(triggered_enchantments) <= 0:
+            return EffectOutcome.EMPTY()
+
+        return await self.get_outcome(triggered_enchantments, handler_context)
+
+    async def on_skill_hits(
+        self,
+        handler_context: HandlerContext,
+    ) -> EffectOutcome:
+        triggered_enchantments = await self.enchantment_trigger(
+            handler_context.context, handler_context.source, EffectTrigger.SKILL_HITS
+        )
+
+        if len(triggered_enchantments) <= 0:
+            return EffectOutcome.EMPTY()
+
+        return await self.get_outcome(triggered_enchantments, handler_context)
+
     async def get_outcome(
         self,
         gear_enchantments: list[GearEnchantment],
@@ -404,6 +452,19 @@ class CombatEnchantmentManager(Service):
                 outcome_data[enchantment_type] = [outcome]
             else:
                 outcome_data[enchantment_type].append(outcome)
+
+            if (
+                EffectTrigger.ON_TRIGGER_SUCCESS
+                in gear_enchantment.enchantment.base_enchantment.consumed
+                and (
+                    outcome.flags is None or OutcomeFlag.NO_CONSUME not in outcome.flags
+                )
+            ):
+                await self.consume_enchantment_stack(
+                    handler_context.context,
+                    handler_context.source,
+                    gear_enchantment.enchantment,
+                )
 
         combined_outcomes = []
         for enchantment_type, outcomes in outcome_data.items():
@@ -439,27 +500,46 @@ class CombatEnchantmentManager(Service):
         context: EncounterContext,
         character: Character,
         trigger: EffectTrigger,
+        multi: bool = False,
     ) -> list[GearEnchantment]:
         triggered: list[GearEnchantment] = []
+        triggered_types: list[EnchantmentType] = []
+
+        if character.is_enemy:
+            return []
 
         for enchantment in character.active_enchantments:
 
             is_triggered = trigger in enchantment.base_enchantment.trigger
             is_consumed = trigger in enchantment.base_enchantment.consumed
 
-            if not is_triggered or is_consumed:
+            if not (is_triggered or is_consumed):
                 continue
 
             gear_enchantment = await self.get_gear_enchantment(character, enchantment)
 
-            if gear_enchantment.stacks_left <= 0:
+            enchantment_type = enchantment.base_enchantment.enchantment_type
+
+            if not multi and enchantment_type in triggered_types:
+                continue
+
+            stacks_left = gear_enchantment.stacks_left()
+
+            if stacks_left is not None and stacks_left <= 0:
+                continue
+
+            if gear_enchantment.on_cooldown():
+                continue
+
+            if not gear_enchantment.proc():
                 continue
 
             if is_consumed:
-                await self.consume_enchantment_stack(context, enchantment)
+                await self.consume_enchantment_stack(context, character, enchantment)
 
             if is_triggered:
                 triggered.append(gear_enchantment)
+                triggered_types.append(enchantment_type)
 
         triggered = sorted(
             triggered, key=lambda item: item.enchantment.priority, reverse=True

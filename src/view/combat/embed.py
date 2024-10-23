@@ -2,6 +2,7 @@ import discord
 
 from combat.gear.gear import Gear
 from combat.gear.types import Rarity
+from combat.types import UnlockableFeature
 from config import Config
 
 
@@ -213,11 +214,10 @@ class EnchantmentSpacerEmbed(discord.Embed):
             title = "Empty"
         else:
             description = (
-                "You are currently crafting using the item shown above. "
                 "Select one of the following enchantments to apply to "
                 "your selected piece of equipment."
             )
-            title = f"Crafting with {gear.rarity.name} {gear.name}"
+            title = f"Crafting with {gear.rarity.value} {gear.name}"
 
         if len(description) < max_width:
             spacing = max_width - len(description)
@@ -244,6 +244,8 @@ class ForgeEmbed(discord.Embed):
     ):
         description = (
             "Toss your scrap into this gaping hole and it will spit out random items for you.\n\n"
+            "Alternatively you can combine any three items in here to forge them into a new one. "
+            "Try to find all the possible combinations!\n\n"
             f"Max item level: [35m{forge_level}[0m\n"
             f"Max item rarity: [35m{max_rarity.value}[0m"
         )
@@ -282,15 +284,20 @@ class EnemyOverviewEmbed(discord.Embed):
             f"Current Server Level: [35m{guild_level}[0m\n"
         )
 
-        if fresh_prog and progress < Config.FORGE_UNLOCK_REQUIREMENT:
+        if (
+            fresh_prog
+            and progress < Config.FORGE_UNLOCK_REQUIREMENT
+            and guild_level >= Config.UNLOCK_LEVELS[UnlockableFeature.FORGE_SCRAP]
+        ):
             description += f"Progress to next forge level: [35m{progress}[0m/[35m{Config.FORGE_UNLOCK_REQUIREMENT}[0m\n"
 
-        description += (
-            f"Progress to next guild level: [35m{progress}[0m/[35m{requirement}[0m"
-        )
+        if guild_level < Config.MAX_LVL:
+            description += f"Progress to next guild level: [35m{progress}[0m/[35m{requirement}[0m"
 
-        if guild_level in Config.BOSS_LEVELS and progress >= requirement:
-            description += "\n[31mDefeat The Boss To Progress.[0m"
+            if guild_level in Config.BOSS_LEVELS and progress >= requirement:
+                description += "\n[31mDefeat The Boss To Progress.[0m"
+        else:
+            description += "You reached this seasons maximum level. Congratulations!"
 
         if len(description) < max_width:
             spacing = max_width - len(description)

@@ -1,7 +1,9 @@
 from enum import Enum
 
+from forge.types import ForgeableType
 
-class SkillType(str, Enum):
+
+class SkillType(ForgeableType, str, Enum):
     EMPTY = "EmptySkill"
 
     # Player Skills
@@ -264,6 +266,16 @@ class SkillEffect(str, Enum):
     NOTHING = "Nothing"
     BUFF = "Buff"
     HEALING = "Healing"
+    CHANCE = "Chance"
+
+    @property
+    def damaging(self):
+        return self in [
+            SkillEffect.PHYSICAL_DAMAGE,
+            SkillEffect.MAGICAL_DAMAGE,
+            SkillEffect.EFFECT_DAMAGE,
+            SkillEffect.NEUTRAL_DAMAGE,
+        ]
 
 
 class SkillTarget(Enum):

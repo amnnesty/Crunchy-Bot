@@ -26,7 +26,7 @@ class LootPayoutState(State):
     def __init__(self, controller: Controller, context: EncounterContext):
         super().__init__(controller, context)
         self.state_type: StateType = StateType.LOOT_PAYOUT
-        self.next_state: StateType = StateType.POST_ENCOUNTER
+        self.next_state: StateType = None
 
     async def startup(self):
         context = self.context
@@ -67,6 +67,7 @@ class LootPayoutState(State):
                 if (
                     drop.level <= auto_scrap
                     and drop.base.base_type != Base.SKILL
+                    and drop.base.base_type != Base.ENCHANTMENT
                     and drop.rarity != Rarity.UNIQUE
                 ):
                     gear_to_scrap.append(drop)
@@ -92,7 +93,9 @@ class LootPayoutState(State):
                 item = await self.item_manager.give_item(
                     member.guild.id, member.id, item
                 )
-                embeds.append(item.get_embed(self.bot, show_price=False))
+                embeds.append(
+                    item.get_embed(self.bot, show_title=True, show_price=False)
+                )
                 await asyncio.sleep(1)
 
                 await self.discord.edit_message(message, embeds=embeds)
@@ -116,7 +119,6 @@ class LootPayoutState(State):
             )
             view.set_message(message)
 
-        self.context._concluded = True
         self.done = True
         self.quit = True
 
@@ -131,6 +133,8 @@ class LootPayoutState(State):
         guild_level = await self.database.get_guild_level(guild.id)
 
         if context.encounter.enemy_level != guild_level:
+            return False
+        if context.encounter.enemy_level == Config.MAX_LVL:
             return False
         if guild_level not in Config.BOSS_LEVELS:
             return False

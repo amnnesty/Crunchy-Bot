@@ -5,38 +5,45 @@ import discord
 
 from combat.actors import Character
 from combat.enchantments.enchantment import Enchantment, GearEnchantment
-from combat.enchantments.types import EnchantmentEffect, EnchantmentType
+from combat.enchantments.types import (
+    EnchantmentEffect,
+    EnchantmentFilterFlags,
+    EnchantmentType,
+)
 from combat.gear.gear import Gear
-from combat.gear.types import EquipmentSlot, Rarity
+from combat.gear.types import EquipmentSlot, GearModifierType, Rarity
+from combat.types import UnlockableFeature
+from config import Config
 from control.combat.combat_embed_manager import CombatEmbedManager
 from control.combat.combat_enchantment_manager import CombatEnchantmentManager
+from control.combat.combat_gear_manager import CombatGearManager
 from control.controller import Controller
+from control.forge_manager import ForgeManager
 from control.types import ControllerType
 from events.types import UIEventType
 from events.ui_event import UIEvent
+from forge.forgable import ForgeInventory
 from view.combat.elements import (
-    BackButton,
-    CurrentPageButton,
     ImplementsBack,
+    ImplementsBalance,
+    ImplementsForging,
     ImplementsLocking,
     ImplementsPages,
     ImplementsScrapping,
-    PageButton,
-    ScrapAllButton,
-    ScrapAmountButton,
-    ScrapBalanceButton,
+    MenuState,
 )
 from view.combat.embed import (
     EnchantmentHeadEmbed,
     EnchantmentSpacerEmbed,
 )
-from view.combat.equipment_view import EquipmentViewState
+from view.combat.forge_menu_view import ForgeMenuState
 from view.view_menu import ViewMenu
 
 
 @dataclass
 class EnchantmentGroup:
     enchantment_type: EnchantmentType
+    label: str
     rarity: Rarity
     enchantments: list[Enchantment]
     enchantment_data: GearEnchantment = None
@@ -58,8 +65,24 @@ class EnchantmentGroup:
 
 
 class EnchantmentView(
-    ViewMenu, ImplementsPages, ImplementsBack, ImplementsLocking, ImplementsScrapping
+    ViewMenu,
+    ImplementsPages,
+    ImplementsBack,
+    ImplementsLocking,
+    ImplementsScrapping,
+    ImplementsForging,
+    ImplementsBalance,
 ):
+
+    SCRAP_ILVL_MAP = {
+        1: 15,
+        2: 30,
+        3: 60,
+        4: 100,
+        5: 150,
+        6: 200,
+        7: 250,
+    }
 
     def __init__(
         self,
@@ -89,6 +112,7 @@ class EnchantmentView(
         self.enchantment_manager: CombatEnchantmentManager = (
             self.controller.get_service(CombatEnchantmentManager)
         )
+        self.guild_level: int = None
 
         self.filter = EquipmentSlot.ANY
         self.filtered_items: list[EnchantmentGroup] = []
@@ -99,12 +123,14 @@ class EnchantmentView(
         self.filter_items()
         self.message = None
         self.loaded = False
+        self.forge_inventory: ForgeInventory = None
 
-        self.controller_type = ControllerType.EQUIPMENT
+        self.controller_types = [ControllerType.MAIN_MENU, ControllerType.EQUIPMENT]
         self.controller.register_view(self)
         self.embed_manager: CombatEmbedManager = controller.get_service(
             CombatEmbedManager
         )
+        self.forge_manager: ForgeManager = self.controller.get_service(ForgeManager)
 
     async def listen_for_ui_event(self, event: UIEvent):
         match event.type:
@@ -121,7 +147,7 @@ class EnchantmentView(
             return
 
     def group_enchantments(self):
-        enchantment_stock: dict[EnchantmentType, dict[Rarity, list[Enchantment]]] = {}
+        enchantment_stock: dict[str, dict[Rarity, list[Enchantment]]] = {}
         sorted_enchantments: list[Enchantment] = sorted(
             self.enchantments, key=lambda x: x.id
         )
@@ -130,6 +156,7 @@ class EnchantmentView(
 
         for enchantment in sorted_enchantments:
             enchantment_type = enchantment.base_enchantment.enchantment_type
+            enchantment_label = enchantment.base_enchantment.name
             rarity = enchantment.rarity
 
             if (
@@ -138,32 +165,41 @@ class EnchantmentView(
                 and enchantment.base_enchantment.enchantment_effect
                 == EnchantmentEffect.EFFECT
             ):
-                enchantment_info[enchantment.base_enchantment.base_enchantment_type] = (
-                    enchantment.name
-                )
+                match enchantment.base_enchantment.base_enchantment_type:
+                    case EnchantmentType.SKILL_STACKS:
+                        enchantment_info[
+                            enchantment.base_enchantment.base_enchantment_type
+                        ] = "Skill Stacks"
+                    case _:
+                        enchantment_info[
+                            enchantment.base_enchantment.base_enchantment_type
+                        ] = enchantment.name
 
             if (
                 EnchantmentType.CRAFTING not in enchantment_info
                 and enchantment.base_enchantment.enchantment_effect
                 == EnchantmentEffect.CRAFTING
             ):
-                enchantment_info[EnchantmentType.CRAFTING] = "Crafting"
+                enchantment_info[EnchantmentType.CRAFTING] = "*Crafting*"
 
-            if enchantment_type not in enchantment_stock:
-                enchantment_stock[enchantment_type] = {}
+            if enchantment_label not in enchantment_stock:
+                enchantment_stock[enchantment_label] = {}
 
-            if rarity not in enchantment_stock[enchantment_type]:
-                enchantment_stock[enchantment_type][rarity] = []
+            if rarity not in enchantment_stock[enchantment_label]:
+                enchantment_stock[enchantment_label][rarity] = []
 
-            enchantment_stock[enchantment_type][rarity].append(enchantment)
+            enchantment_stock[enchantment_label][rarity].append(enchantment)
 
         self.enchantment_info = enchantment_info
 
         enchantment_groups = []
-        for enchantment_type, stock in enchantment_stock.items():
+        for enchantment_label, stock in enchantment_stock.items():
             for rarity, enchantments in stock.items():
+                enchantment_type = enchantments[0].base_enchantment.enchantment_type
                 enchantment_groups.append(
-                    EnchantmentGroup(enchantment_type, rarity, enchantments)
+                    EnchantmentGroup(
+                        enchantment_type, enchantment_label, rarity, enchantments
+                    )
                 )
 
         self.filtered_items = enchantment_groups
@@ -172,11 +208,67 @@ class EnchantmentView(
         self.group_enchantments()
 
         if self.gear is not None:
-            self.filtered_items = [
-                x
-                for x in self.filtered_items
-                if x.enchantment.slot in [EquipmentSlot.ANY, self.gear.slot]
-            ]
+            filtered = []
+            enchantment_info = {}
+            for enchantment_group in self.filtered_items:
+                if enchantment_group.enchantment.slot not in [
+                    EquipmentSlot.ANY,
+                    self.gear.slot,
+                ] and (
+                    EquipmentSlot.is_armor(self.gear.slot)
+                    and enchantment_group.enchantment.slot != EquipmentSlot.ARMOR
+                ):
+                    continue
+                flag_hit = False
+                for flag in enchantment_group.enchantment.base_enchantment.filter_flags:
+                    match flag:
+                        case EnchantmentFilterFlags.MATCH_RARITY:
+                            if self.gear.rarity != enchantment_group.rarity:
+                                flag_hit = True
+                                break
+                        case EnchantmentFilterFlags.MATCH_COMMON_RARITY:
+                            if self.gear.rarity != Rarity.COMMON:
+                                flag_hit = True
+                                break
+                        case EnchantmentFilterFlags.LESS_OR_EQUAL_RARITY:
+                            gear_rarity_weight = CombatGearManager.RARITY_WEIGHTS[
+                                self.gear.rarity
+                            ]
+                            enchantment_rarity_weight = (
+                                CombatGearManager.RARITY_WEIGHTS[
+                                    enchantment_group.rarity
+                                ]
+                            )
+                            if gear_rarity_weight > enchantment_rarity_weight:
+                                flag_hit = True
+                                break
+                if not flag_hit:
+                    filtered.append(enchantment_group)
+                    enchantment = enchantment_group.enchantment
+                    if (
+                        enchantment.base_enchantment.base_enchantment_type
+                        not in enchantment_info
+                        and enchantment.base_enchantment.enchantment_effect
+                        == EnchantmentEffect.EFFECT
+                    ):
+                        match enchantment.base_enchantment.base_enchantment_type:
+                            case EnchantmentType.SKILL_STACKS:
+                                enchantment_info[
+                                    enchantment.base_enchantment.base_enchantment_type
+                                ] = "Skill Stacks"
+                            case _:
+                                enchantment_info[
+                                    enchantment.base_enchantment.base_enchantment_type
+                                ] = enchantment.name
+
+                    if (
+                        EnchantmentType.CRAFTING not in enchantment_info
+                        and enchantment.base_enchantment.enchantment_effect
+                        == EnchantmentEffect.CRAFTING
+                    ):
+                        enchantment_info[EnchantmentType.CRAFTING] = "Crafting"
+            self.enchantment_info = enchantment_info
+            self.filtered_items = filtered
 
         if self.selected_filter_type is not None:
             filtered = []
@@ -268,7 +360,7 @@ class EnchantmentView(
 
         event = UIEvent(
             UIEventType.GEAR_DISMANTLE,
-            (interaction, scrappable, False, self.filter),
+            (interaction, scrappable, False, EquipmentSlot.ANY),
             self.id,
         )
         await self.controller.dispatch_ui_event(event)
@@ -307,8 +399,8 @@ class EnchantmentView(
     ):
         await interaction.response.defer()
         event = UIEvent(
-            UIEventType.GEAR_OPEN_OVERVIEW,
-            (interaction, EquipmentViewState.GEAR),
+            UIEventType.MAIN_MENU_STATE_CHANGE,
+            (interaction, MenuState.GEAR, False),
             self.id,
         )
         await self.controller.dispatch_ui_event(event)
@@ -321,6 +413,7 @@ class EnchantmentView(
 
         disable_apply = disabled
         disable_dismantle = disabled
+        disable_forge = disabled
         for enchantment_group in self.selected:
             if enchantment_group is None:
                 continue
@@ -330,20 +423,31 @@ class EnchantmentView(
             ):
                 # Default Gear
                 disable_dismantle = True
+                disable_forge = True
                 break
 
         if self.gear is None:
             disable_apply = True
+        else:
+            if self.gear.rarity == Rarity.UNIQUE:
+                disable_apply = True
+
+            if GearModifierType.CRANGLED in self.gear.modifiers:
+                disable_apply = True
 
         if len(self.selected) <= 0:
             disable_apply = True
             disable_dismantle = True
+            disable_forge = True
 
         self.clear_items()
 
         if len(self.selected) > 1:
             disable_apply = True
-        if len(self.enchantment_info) > 0:
+        if (
+            len(self.enchantment_info) > 0
+            and self.guild_level >= Config.UNLOCK_LEVELS[UnlockableFeature.ENCHANTMENTS]
+        ):
             self.add_item(
                 EnchantmentTypeDropdown(
                     self.enchantment_info,
@@ -361,20 +465,26 @@ class EnchantmentView(
                 )
             )
 
-        self.add_item(PageButton("<", False))
+        self.add_page_button("<", False)
         self.add_item(ApplyButton(disabled=disable_apply))
-        self.add_item(PageButton(">", True))
-        self.add_item(CurrentPageButton(page_display))
-        self.add_item(ScrapBalanceButton(self.scrap_balance))
-        self.add_item(ScrapAllButton(disabled=disable_dismantle))
-        self.add_item(ScrapAmountButton(disabled=disable_dismantle))
-        self.add_item(BackButton())
+        self.add_page_button(">", True)
+        self.add_current_page_button(page_display)
+        self.add_scrap_balance_button(self.scrap_balance, row=2)
+        self.add_scrap_all_button(disabled=disable_dismantle)
+        self.add_scrap_amount_button(disabled=disable_dismantle)
+        self.add_add_to_forge_button(disabled=disable_forge, row=3)
+        self.add_back_button()
+
+        if self.forge_inventory is not None and not self.forge_inventory.empty:
+            self.add_forge_status_button(current=self.forge_inventory, disabled=False)
+            self.add_clear_forge_button(disabled=False)
 
     async def refresh_ui(
         self,
         character: Character = None,
         enchantment_inventory: list[Enchantment] = None,
         scrap_balance: int = None,
+        gear: Gear = None,
         disabled: bool = False,
         no_embeds: bool = False,
     ):
@@ -383,6 +493,17 @@ class EnchantmentView(
 
         if character is not None:
             self.character = character
+
+        if gear is not None:
+            self.gear = gear
+
+        self.guild_level = await self.controller.database.get_guild_level(self.guild_id)
+        if (  # noqa: SIM102
+            self.guild_level < Config.UNLOCK_LEVELS[UnlockableFeature.ENCHANTMENTS]
+        ):
+            if self.selected_filter_type is None:
+                self.selected_filter_type = EnchantmentType.CRAFTING
+                self.filter_items()
 
         if enchantment_inventory is not None:
             self.enchantments = enchantment_inventory
@@ -394,6 +515,16 @@ class EnchantmentView(
 
         if self.selected is None or len(self.selected) <= 0:
             disabled = True
+
+        self.selected = [
+            group
+            for group in self.filtered_items
+            if group.enchantment_type
+            in [selected.enchantment_type for selected in self.selected]
+            and group.rarity in [selected.rarity for selected in self.selected]
+        ]
+
+        self.forge_inventory = await self.forge_manager.get_forge_inventory(self.member)
 
         if no_embeds:
             await self.refresh_elements(disabled)
@@ -417,7 +548,7 @@ class EnchantmentView(
 
         if self.gear is not None:
             gear_embed = await self.embed_manager.get_gear_embed(
-                self.gear, self.character
+                self.gear, self.character, show_boundaries=True
             )
             embeds.append(gear_embed)
 
@@ -433,7 +564,6 @@ class EnchantmentView(
             self.display_enchantments.append(enchantment_group)
 
             enchantment_embed = enchantment_data.get_embed(
-                show_full_data=True,
                 amount=enchantment_group.amount,
             )
             embeds.append(enchantment_embed)
@@ -467,6 +597,7 @@ class EnchantmentView(
     ):
         await interaction.response.defer()
         self.selected_filter_type = selected_type
+        self.selected = []
         self.filter_items()
         self.current_page = min(self.current_page, (self.page_count - 1))
         await self.refresh_ui()
@@ -483,6 +614,50 @@ class EnchantmentView(
         ]
 
         await self.refresh_ui()
+
+    async def add_to_forge(
+        self,
+        interaction: discord.Interaction,
+    ):
+        await interaction.response.defer(ephemeral=True)
+        if len(self.selected) != 1:
+            return
+        selected = self.selected[0]
+        for enchantment in selected.enchantments:
+            if self.forge_inventory is None or enchantment.id not in [
+                x.id for x in self.forge_inventory.items if x is not None
+            ]:
+                event = UIEvent(
+                    UIEventType.FORGE_ADD_ITEM,
+                    (interaction, enchantment),
+                    self.id,
+                )
+                await self.controller.dispatch_ui_event(event)
+                return
+
+    async def open_forge(
+        self,
+        interaction: discord.Interaction,
+    ):
+        await interaction.response.defer()
+        event = UIEvent(
+            UIEventType.MAIN_MENU_STATE_CHANGE,
+            (interaction, MenuState.FORGE, False, ForgeMenuState.COMBINE),
+            self.id,
+        )
+        await self.controller.dispatch_ui_event(event)
+
+    async def clear_forge(
+        self,
+        interaction: discord.Interaction,
+    ):
+        await interaction.response.defer()
+        event = UIEvent(
+            UIEventType.FORGE_CLEAR,
+            interaction,
+            self.id,
+        )
+        await self.controller.dispatch_ui_event(event)
 
     async def on_timeout(self):
         with contextlib.suppress(discord.HTTPException):
@@ -595,8 +770,16 @@ class Dropdown(discord.ui.Select):
                 enchantment.base_enchantment.enchantment_effect
                 == EnchantmentEffect.EFFECT
             ):
-                description.append(f"MIN: {data.min_roll}")
-                description.append(f"MAX: {data.max_roll}")
+                if data.min_roll != 0 or data.max_roll != 0:
+                    description.append(f"MIN: {data.min_roll}")
+                    description.append(f"MAX: {data.max_roll}")
+                if (
+                    data.enchantment.base_enchantment.stacks is not None
+                    and data.enchantment.base_enchantment.stacks > 0
+                ):
+                    description.append(
+                        f"USE: {data.enchantment.base_enchantment.stacks}"
+                    )
             description.append(f"CNT: {group.amount}")
             description = " | ".join(description)
             description = (

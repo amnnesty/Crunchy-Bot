@@ -9,11 +9,8 @@ from combat.skills.skill import Skill, SkillInstance
 from combat.status_effects.status_effects import *  # noqa: F403
 from combat.status_effects.status_handler import StatusEffectHandler
 from combat.status_effects.types import StatusEffectType
-from control.combat.combat_actor_manager import CombatActorManager
-from control.combat.combat_embed_manager import CombatEmbedManager
 from control.combat.combat_enchantment_manager import CombatEnchantmentManager
 from control.combat.effect_manager_interface import EffectManager
-from control.combat.object_factory import ObjectFactory
 from control.combat.status_effect_manager import CombatStatusEffectManager
 from control.controller import Controller
 from control.logger import BotLogger
@@ -34,17 +31,6 @@ class CombatEffectManager(Service):
         super().__init__(bot, logger, database)
         self.controller = controller
         self.log_name = "StatusEffects"
-        self.actor_manager: CombatActorManager = self.controller.get_service(
-            CombatActorManager
-        )
-        self.embed_manager: CombatEmbedManager = self.controller.get_service(
-            CombatEmbedManager
-        )
-        self.embed_manager: CombatEmbedManager = self.controller.get_service(
-            CombatEmbedManager
-        )
-        self.factory: ObjectFactory = self.controller.get_service(ObjectFactory)
-
         self.handler_cache: dict[StatusEffectType, StatusEffectHandler] = {}
         self.status_effect_manager: CombatStatusEffectManager = (
             self.controller.get_service(CombatStatusEffectManager)
@@ -55,7 +41,7 @@ class CombatEffectManager(Service):
 
         self.managers: list[EffectManager] = [
             self.status_effect_manager,
-            # self.enchantment_manager,
+            self.enchantment_manager,
         ]
 
     async def listen_for_event(self, event: BotEvent):
@@ -70,12 +56,17 @@ class CombatEffectManager(Service):
         stacks: int,
         application_value: float = None,
     ) -> EffectOutcome:
-        outcome = await self.on_status_application(target, context, type)
-        if (
-            outcome.flags is not None
-            and OutcomeFlag.PREVENT_STATUS_APPLICATION in outcome.flags
-        ):
-            return outcome
+        outcome = await self.on_status_application(
+            source, target, context, type, application_value
+        )
+
+        if outcome.flags is not None:
+            for flag in outcome.flags:
+                match flag:
+                    case OutcomeFlag.PREVENT_STATUS_APPLICATION:
+                        return outcome
+                    case OutcomeFlag.ADDITIONAL_STACK_VALUE:
+                        stacks = stacks + outcome.value
 
         status_outcome = await self.status_effect_manager.apply_status(
             context, source, target, type, stacks, application_value
@@ -118,19 +109,21 @@ class CombatEffectManager(Service):
 
     async def on_status_application(
         self,
-        actor: Actor,
+        source: Actor,
+        target: Actor,
         context: EncounterContext,
         applied_effect_type: StatusEffectType,
+        application_value: float = None,
     ) -> EffectOutcome:
 
         handler_context = HandlerContext(
             trigger=EffectTrigger.ON_STATUS_APPLICATION,
             context=context,
-            source=actor,
-            target=actor,
+            source=source,
+            target=target,
             skill=None,
             status_effect_type=applied_effect_type,
-            application_value=None,
+            application_value=application_value,
             damage_instance=None,
         )
 
@@ -170,15 +163,16 @@ class CombatEffectManager(Service):
     async def on_attack(
         self,
         context: EncounterContext,
-        actor: Actor,
+        source: Actor,
+        target: Actor,
         skill: Skill,
     ) -> EffectOutcome:
 
         handler_context = HandlerContext(
             trigger=EffectTrigger.ON_ATTACK,
             context=context,
-            source=actor,
-            target=actor,
+            source=source,
+            target=target,
             skill=skill,
             status_effect_type=None,
             application_value=None,
@@ -258,6 +252,29 @@ class CombatEffectManager(Service):
         outcomes: list[EffectOutcome] = []
         for manager in self.managers:
             outcomes.append(await manager.on_post_attack(handler_context))
+        return EffectHandler.combine_outcomes(outcomes)
+
+    async def on_post_skill(
+        self,
+        context: EncounterContext,
+        actor: Actor,
+        target: Actor,
+        skill: Skill,
+    ) -> EffectOutcome:
+        handler_context = HandlerContext(
+            trigger=EffectTrigger.POST_SKILL,
+            context=context,
+            source=actor,
+            target=target,
+            skill=skill,
+            status_effect_type=None,
+            application_value=None,
+            damage_instance=None,
+        )
+
+        outcomes: list[EffectOutcome] = []
+        for manager in self.managers:
+            outcomes.append(await manager.on_post_skill(handler_context))
         return EffectHandler.combine_outcomes(outcomes)
 
     async def on_round_start(
@@ -380,3 +397,47 @@ class CombatEffectManager(Service):
             actor_outcomes[active_actor.id] = EffectHandler.combine_outcomes(outcomes)
 
         return actor_outcomes
+
+    async def on_skill_charges(
+        self,
+        actor: Actor,
+        skill: Skill,
+    ) -> EffectOutcome:
+
+        handler_context = HandlerContext(
+            trigger=EffectTrigger.SKILL_CHARGE,
+            context=None,
+            source=actor,
+            target=None,
+            skill=skill,
+            status_effect_type=None,
+            application_value=None,
+            damage_instance=None,
+        )
+
+        outcomes: list[EffectOutcome] = []
+        for manager in self.managers:
+            outcomes.append(await manager.on_skill_charges(handler_context))
+        return EffectHandler.combine_outcomes(outcomes)
+
+    async def on_skill_hits(
+        self,
+        actor: Actor,
+        skill: Skill,
+    ) -> EffectOutcome:
+
+        handler_context = HandlerContext(
+            trigger=EffectTrigger.SKILL_HITS,
+            context=None,
+            source=actor,
+            target=None,
+            skill=skill,
+            status_effect_type=None,
+            application_value=None,
+            damage_instance=None,
+        )
+
+        outcomes: list[EffectOutcome] = []
+        for manager in self.managers:
+            outcomes.append(await manager.on_skill_hits(handler_context))
+        return EffectHandler.combine_outcomes(outcomes)

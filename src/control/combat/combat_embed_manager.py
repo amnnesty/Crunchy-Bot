@@ -9,11 +9,13 @@ from combat.actors import Actor, Character, Opponent
 from combat.effects.effect import EmbedDataCollection
 from combat.encounter import Encounter, EncounterContext, TurnDamageData, TurnData
 from combat.gear.gear import Gear
+from combat.gear.types import GearModifierType
 from combat.skills.skill import Skill
 from combat.skills.types import SkillEffect
 from config import Config
 from control.combat.combat_actor_manager import CombatActorManager
 from control.combat.combat_enchantment_manager import CombatEnchantmentManager
+from control.combat.combat_gear_manager import CombatGearManager
 from control.combat.combat_skill_manager import CombatSkillManager
 from control.combat.encounter_statistics import EncounterStatistics
 from control.combat.object_factory import ObjectFactory
@@ -50,6 +52,9 @@ class CombatEmbedManager(Service):
         )
         self.encounter_statistics: EncounterStatistics = self.controller.get_service(
             EncounterStatistics
+        )
+        self.gear_manager: CombatGearManager = self.controller.get_service(
+            CombatGearManager
         )
         self.enchantment_manager: CombatEnchantmentManager = (
             self.controller.get_service(CombatEnchantmentManager)
@@ -170,8 +175,8 @@ class CombatEmbedManager(Service):
 
         spacing = ""
         content_length = len(value)
-        if content_length < (max_width + 20):
-            spacing = " " + "\u00a0" * max_width
+        if content_length < max_width:
+            spacing = " " + "\u00a0" * (max_width - content_length)
 
         embed_content = "```\n" + value + spacing + "```"
         embed.add_field(name=name, value=embed_content, inline=False)
@@ -200,6 +205,49 @@ class CombatEmbedManager(Service):
 
         embed_content = "```\n" + value + "```"
         embed.add_field(name=name, value=embed_content, inline=False)
+
+    async def add_active_enchantments(
+        self,
+        embed: discord.Embed,
+        character: Character,
+        max_width: int = None,
+    ) -> str:
+        if len(character.active_enchantments) <= 0:
+            return ""
+
+        if max_width is None:
+            max_width = Config.COMBAT_EMBED_MAX_WIDTH
+
+        info_block = "```ansi\n"
+        info_data = []
+        for enchantment in character.active_enchantments:
+            cooldown_remaining = None
+            if (
+                enchantment.base_enchantment.cooldown is not None
+                and enchantment.id in character.enchantment_cooldowns
+                and character.enchantment_cooldowns[enchantment.id] is not None
+            ):
+                cooldown_remaining = (
+                    enchantment.base_enchantment.cooldown
+                    - character.enchantment_cooldowns[enchantment.id]
+                )
+
+            uses = None
+            if enchantment.base_enchantment.stacks is not None:
+                total = enchantment.base_enchantment.stacks
+                remaining = total
+                if enchantment.id in character.enchantment_stacks_used:
+                    remaining = (
+                        total - character.enchantment_stacks_used[enchantment.id]
+                    )
+                uses = (remaining, total)
+            info_data.append(
+                enchantment.get_info_text(cooldown=cooldown_remaining, uses=uses)
+            )
+        info_block += "\n".join(info_data)
+        info_block += "```"
+
+        embed.add_field(name="Active Enchantments", value=info_block, inline=False)
 
     async def get_combat_embed(self, context: EncounterContext) -> discord.Embed:
         enemy = context.opponent.enemy
@@ -355,6 +403,8 @@ class CombatEmbedManager(Service):
             head_embed, actor, max_width=Config.COMBAT_EMBED_MAX_WIDTH
         )
 
+        await self.add_active_enchantments(head_embed, actor)
+
         if actor.image_url is not None:
             head_embed.set_thumbnail(url=actor.image_url)
 
@@ -363,9 +413,7 @@ class CombatEmbedManager(Service):
 
         for skill in actor.skills:
             embeds.append(
-                (await self.skill_manager.get_skill_data(actor, skill)).get_embed(
-                    show_data=True
-                )
+                (await self.skill_manager.get_skill_data(actor, skill)).get_embed()
             )
 
         return embeds
@@ -430,6 +478,8 @@ class CombatEmbedManager(Service):
 
         if damage_instance.is_crit:
             damage_info = "CRIT! " + damage_info
+        if damage_instance.bonus_damage is not None:
+            damage_info = damage_info + f"\n+ **{damage_instance.bonus_damage}**"
 
         return outcome_title, damage_info
 
@@ -939,7 +989,9 @@ class CombatEmbedManager(Service):
         embed = discord.Embed(title=title, color=self.SYSTEM_MESSAGE_COLOR)
 
         round_count = context.round_number
-        embed.add_field(name=f"Round {round_count}", value="", inline=False)
+        self.add_text_bar(
+            embed, "", f"Round {round_count}", Config.COMBAT_EMBED_MAX_WIDTH
+        )
 
         initiative_list = context.initiative
         current_actor = context.current_actor
@@ -950,9 +1002,17 @@ class CombatEmbedManager(Service):
                 continue
             number = idx + 1
             fraction = actor.current_hp / actor.max_hp
-            percentage = f"{round(fraction * 100, 1)}".rstrip("0").rstrip(".")
+            if fraction == 1:
+                percentage = f"{int( fraction * 100 )}"
+            else:
+                percentage = f"{( fraction * 100 ):.1f}"
             name = actor.name[:20]
-            display_hp = f"[{percentage}%]"
+
+            display_hp = f"{percentage}"
+            display_hp_width = 7
+            spacing = " " * max(0, (display_hp_width - len(display_hp) - 3))
+            display_hp = f"{spacing}[{display_hp}%]"
+
             status_effects = ""
             if actor.defeated:
                 status_effects = "💀"
@@ -965,15 +1025,24 @@ class CombatEmbedManager(Service):
                         status_effects += (
                             f"{effect.status_effect.emoji}{effect.remaining_stacks}"
                         )
+
             if actor.id == current_actor.id:
-                width = 45
-                text = f"{number}. >> {name} << {status_effects} {display_hp}"
-                spacing = " " * max(0, width - len(text))
-                initiative_display += f"\n{text}{spacing}"
-                continue
-            initiative_display += (
-                f"\n{number}. {actor.name} {status_effects} {display_hp}"
-            )
+                name = f">> {name} <<"
+
+            width = Config.COMBAT_EMBED_MAX_WIDTH
+            line = f"\n{number}. {display_hp} {name}"
+            available = width - len(line) - 3
+
+            if len(status_effects) <= 0:
+                initiative_display += line
+            elif len(status_effects) < available:
+                line += f" {status_effects}"
+                initiative_display += line
+            else:
+                initiative_display += f"{line}"
+                spacing = " " * (len(f"\n{number}. {display_hp} "))
+                initiative_display += f"\n   ╚ {status_effects}"
+
         initiative_display = f"```python\n{initiative_display}```"
         embed.add_field(name="Turn Order:", value=initiative_display, inline=False)
 
@@ -1052,6 +1121,7 @@ class CombatEmbedManager(Service):
         show_locked_state: bool = False,
         scrap_value: int = None,
         max_width: int = None,
+        show_boundaries: bool = False,
     ) -> discord.Embed:
         enchantment_data = None
         if len(gear.enchantments) > 0:
@@ -1061,6 +1131,19 @@ class CombatEmbedManager(Service):
                     character, enchantment
                 )
                 enchantment_data.append(data)
+
+        modifier_boundaries: dict[GearModifierType, tuple[float, float]] = None
+        if show_boundaries:
+            modifier_boundaries = {}
+            for modifier_type, _ in gear.modifiers.items():
+                if modifier_type == GearModifierType.CRANGLED:
+                    continue
+                modifier_boundaries[modifier_type] = (
+                    await self.gear_manager.get_modifier_boundaries(
+                        gear.base, gear.level, modifier_type
+                    )
+                )
+
         return gear.get_embed(
             show_data=show_data,
             show_info=show_info,
@@ -1069,4 +1152,5 @@ class CombatEmbedManager(Service):
             scrap_value=scrap_value,
             max_width=max_width,
             enchantment_data=enchantment_data,
+            modifier_boundaries=modifier_boundaries,
         )

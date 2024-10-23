@@ -1,11 +1,12 @@
 import contextlib
 
 import discord
+from discord.ext import commands
+
 from control.controller import Controller
 from control.types import ControllerType
 from datalayer.garden import UserGarden
 from datalayer.types import PlantType, PlotState
-from discord.ext import commands
 from events.types import UIEventType
 from events.ui_event import UIEvent
 from view.garden.embed import GardenEmbed
@@ -41,7 +42,7 @@ class PlotView(ViewMenu):
         if len(self.user_seeds) > 0:
             self.selected_seed = list(self.user_seeds.keys())[0]
 
-        self.controller_type = ControllerType.GARDEN_VIEW
+        self.controller_types = [ControllerType.GARDEN_VIEW]
         self.controller.register_view(self)
 
         self.back_button: BackButton = None

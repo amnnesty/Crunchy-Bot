@@ -35,7 +35,7 @@ from events.types import EncounterEventType, UIEventType
 from events.ui_event import UIEvent
 from items.types import ItemType
 from view.combat.embed import EquipmentHeadEmbed
-from view.combat.equipment_view import EquipmentView
+from view.combat.gear_menu_view import GearMenuView
 from view.settings_modal import SettingsModal
 
 
@@ -491,8 +491,16 @@ class Combat(commands.Cog):
         if not await self.__check_enabled(interaction):
             return
 
-        if enemy_type is not None:
-            if enemy_type not in EnemyType._value2member_map_:
+        guild_id = interaction.guild_id
+
+        if level is not None:
+            guild_level = await self.database.get_guild_level(guild_id)
+            level = max(1, min(guild_level, level))
+
+        if enemy_type is not None:  # noqa: SIM102
+            try:
+                enemy_type = EnemyType(enemy_type)
+            except Exception:
                 await self.bot.command_response(
                     self.__cog_name__,
                     interaction,
@@ -501,17 +509,11 @@ class Combat(commands.Cog):
                 )
                 return
 
-            if level is not None:
-                enemy = await self.factory.get_enemy(enemy_type)
+            enemy = await self.factory.get_enemy(enemy_type)
 
-                if enemy.min_level > level or enemy.max_level < level:
-                    await self.bot.command_response(
-                        self.__cog_name__,
-                        interaction,
-                        "Enemy cannot have that level.",
-                        args=[enemy_type],
-                    )
-                    return
+            if level is not None:
+                level = max(enemy.min_level, level)
+                level = min(enemy.max_level, level)
 
         combat_channels = await self.settings_manager.get_combat_channels(
             interaction.guild_id
@@ -556,7 +558,6 @@ class Combat(commands.Cog):
         await interaction.response.defer(ephemeral=True)
 
         scrap_balance = 0
-        forge_level = await self.controller.database.get_forge_level(guild_id)
 
         if user is None:
             user = interaction.user
@@ -568,13 +569,12 @@ class Combat(commands.Cog):
 
         character = await self.actor_manager.get_character(user)
 
-        view = EquipmentView(
+        view = GearMenuView(
             self.controller,
             interaction,
             character,
             scrap_balance,
-            forge_level,
-            is_owner=(user.id == interaction.user.id),
+            limited=(user.id != interaction.user.id),
         )
 
         embeds = []
@@ -637,9 +637,10 @@ class Combat(commands.Cog):
         self,
         interaction: discord.Interaction,
         user: discord.Member,
-        level: app_commands.Range[int, 1],
         base: str,
-        rarity: Rarity,
+        rarity: Rarity | None,
+        level: app_commands.Range[int, 1] | None,
+        amount: app_commands.Range[int, 1, 9] | None,
     ):
         if not await self.__check_enabled(interaction, all_channels=True):
             return
@@ -648,23 +649,36 @@ class Combat(commands.Cog):
         member_id = user.id
         guild_id = interaction.guild_id
 
-        droppable_base = await self.factory.get_base(base)
+        if amount is None:
+            amount = 1
 
-        gear = await self.gear_manager.generate_specific_drop(
-            member_id=member_id,
-            guild_id=guild_id,
-            item_level=level,
-            base=droppable_base,
-            rarity=rarity,
-        )
+        if level is None:
+            level = await self.database.get_guild_level(guild_id)
 
-        embed = gear.get_embed()
+        if rarity is None:
+            rarity = Rarity.LEGENDARY
+
+        embeds = []
+
+        for _ in range(amount):
+            droppable_base = await self.factory.get_base(base)
+
+            gear = await self.gear_manager.generate_specific_drop(
+                member_id=member_id,
+                guild_id=guild_id,
+                item_level=level,
+                base=droppable_base,
+                rarity=rarity,
+            )
+
+            embed = gear.get_embed()
+            embeds.append(embed)
 
         await self.bot.command_response(
             self.__cog_name__,
             interaction,
             f"Loot was given out to {user.display_name}",
-            embeds=[embed],
+            embeds=embeds,
         )
 
     @group.command(
@@ -996,7 +1010,7 @@ class Combat(commands.Cog):
             )
             return
 
-        await self.encounter_manager.refresh_encounter_thread(encounter.id)
+        await self.encounter_manager.reload_encounter(encounter.id)
 
         await self.bot.command_response(
             self.__cog_name__,
@@ -1093,6 +1107,41 @@ class Combat(commands.Cog):
             "Forced Encounter Start.",
             ephemeral=True,
         )
+
+    @group.command(
+        name="force_skip",
+        description="Foces a encounter to start even when the participant requirements are not met.",
+    )
+    @app_commands.check(__has_permission)
+    async def force_action(self, interaction: discord.Interaction, action: int):
+        channel_id = interaction.channel_id
+        guild_id = interaction.guild_id
+
+        if channel_id is None:
+            await self.bot.command_response(
+                self.__cog_name__,
+                interaction,
+                "Please use this command inside an encounter thread.",
+                ephemeral=True,
+            )
+            return
+
+        encounter = await self.database.get_encounter_by_thread_id(guild_id, channel_id)
+
+        if encounter is None:
+            await self.bot.command_response(
+                self.__cog_name__,
+                interaction,
+                "No encounter found for this thread.",
+                ephemeral=True,
+            )
+            return
+
+        event = UIEvent(
+            UIEventType.COMBAT_FORCE_USE,
+            (interaction, action),
+        )
+        await self.controller.dispatch_ui_event(event)
 
 
 async def setup(bot):

@@ -476,3 +476,46 @@ class PartyLeech(StatusEffect):
             display_status=True,
             override=True,
         )
+
+
+class GroupHug(StatusEffect):
+
+    def __init__(self):
+        super().__init__(
+            effect_type=StatusEffectType.GROUP_HUG,
+            name="Group Hug",
+            description="",
+            trigger=[EffectTrigger.ON_STATUS_APPLICATION],
+            consumed=[EffectTrigger.END_OF_APPLICANT_TURN],
+            display_status=True,
+            emoji="🫂",
+            delay_consume=True,
+        )
+
+
+class GroupHugApplication(StatusEffect):
+
+    def __init__(self):
+        super().__init__(
+            effect_type=StatusEffectType.GROUP_HUG_APPLICATION,
+            name="Group Hug Application",
+            description="",
+            trigger=[EffectTrigger.POST_ATTACK],
+            consumed=[EffectTrigger.POST_ATTACK],
+            display_status=False,
+            emoji="",
+        )
+
+
+class GroupHugDamage(StatusEffect):
+    def __init__(self):
+        super().__init__(
+            effect_type=StatusEffectType.GROUP_HUG_DAMAGE,
+            name="Group Hug Damage",
+            description="",
+            trigger=[EffectTrigger.END_OF_APPLICANT_TURN],
+            consumed=[EffectTrigger.END_OF_APPLICANT_TURN],
+            damage_type=SkillEffect.PHYSICAL_DAMAGE,
+            display_status=False,
+            emoji="🫂",
+        )

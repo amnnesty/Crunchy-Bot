@@ -37,6 +37,7 @@ class SkillType(str, Enum):
     GENERATIONAL_SLIPPER = "GenerationalSlipper"
     SLICE_N_DICE = "SliceAndDice"
     COOL_CUCUMBER = "CoolCucumber"
+    GROUP_HUG = "GroupHug"
 
     # Neutral
     POCKET_SAND = "PocketSand"

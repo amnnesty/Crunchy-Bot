@@ -27,7 +27,7 @@ class StatusEffectType(str, Enum):
     VULNERABLE = "Vulnerable"
     PHYS_VULN = "PhysVuln"
     MAGIC_VULN = "MagicVuln"
-    GROUP_HUG = "GroupHug"
+    GROUP_HUG_EFFECT = "GroupHugEffect"
     GROUP_HUG_APPLICATION = "GroupHugApplication"
     GROUP_HUG_DAMAGE = "GroupHugDamage"
 

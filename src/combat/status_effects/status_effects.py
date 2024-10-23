@@ -478,14 +478,14 @@ class PartyLeech(StatusEffect):
         )
 
 
-class GroupHug(StatusEffect):
+class GroupHugEffect(StatusEffect):
 
     def __init__(self):
         super().__init__(
-            effect_type=StatusEffectType.GROUP_HUG,
+            effect_type=StatusEffectType.GROUP_HUG_EFFECT,
             name="Group Hug",
             description="",
-            trigger=[EffectTrigger.ON_STATUS_APPLICATION],
+            trigger=[EffectTrigger.ON_SELF_APPLICATION],
             consumed=[EffectTrigger.END_OF_APPLICANT_TURN],
             display_status=True,
             emoji="🫂",
